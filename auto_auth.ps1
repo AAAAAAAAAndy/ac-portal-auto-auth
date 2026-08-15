@@ -61,8 +61,8 @@ function Test-InternetAlive {
     使用 generate_204 端点（返回 204 = 已连通）和普通 HTTP 站点。
     #>
     $testUrls = @(
-        "http://www.bing.com",
-        "http://www.qq.com"
+        "http://www.baidu.com",
+        "http://www.sina.com"
     )
 
     foreach ($url in $testUrls) {
@@ -103,6 +103,8 @@ function Invoke-Login {
 
         if ($json.success -eq $true -or $json.success -eq "true") {
             Write-Log "OK" "登录成功! 用户: $($json.userName)"
+            # 等待 3 秒让 portal 认证状态生效
+            Start-Sleep -Seconds 3
             return $true
         }
         else {
