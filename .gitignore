@@ -1,0 +1,12 @@
+# 包含个人凭证的配置文件
+config.json
+
+# 日志文件
+auth_log.txt
+
+# Claude 工作目录
+.claude/
+
+# Windows 系统文件
+Thumbs.db
+Desktop.ini
