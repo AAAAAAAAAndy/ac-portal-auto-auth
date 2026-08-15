@@ -12,6 +12,26 @@ param(
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $ScriptDir "config.json"
+$LockFile = Join-Path $ScriptDir ".lock"
+
+# ---- Single Instance Check ----
+function Test-SingleInstance {
+    if ($Once -or $Install -or $Uninstall) { return $true }
+    if (Test-Path $LockFile) {
+        $lockPid = Get-Content $LockFile -ErrorAction SilentlyContinue
+        $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
+        if ($proc) {
+            Write-Host "[WARN] Already running (PID: $lockPid), exiting." -ForegroundColor Yellow
+            return $false
+        }
+    }
+    $PID | Set-Content $LockFile -Force
+    return $true
+}
+
+function Remove-Lock {
+    if (Test-Path $LockFile) { Remove-Item $LockFile -Force -ErrorAction SilentlyContinue }
+}
 
 # ---- Load Config ----
 function Load-Config {
@@ -53,7 +73,7 @@ function Test-PingAlive {
     catch { return $false }
 }
 
-# ---- HTTP Auth Check (multi-URL probe) ----
+# ---- HTTPS Auth Check ----
 function Test-InternetAlive {
     $testUrls = @(
         "https://www.qq.com",
@@ -99,7 +119,7 @@ function Invoke-Login {
         }
     }
     catch {
-        Write-Log "ERROR" "Login request error: $($_.Exception.Message)"
+        Write-Log "ERROR" "Login error: $($_.Exception.Message)"
         return $false
     }
 }
@@ -117,7 +137,7 @@ function Send-Heartbeat {
 
 # ---- Wait for Network Recovery ----
 function Wait-NetworkBack {
-    param([int]$MaxWait = 300)
+    param([int]$MaxWait = 60)
     $waited = 0
     $interval = 3
     while ($waited -lt $MaxWait) {
@@ -128,7 +148,7 @@ function Wait-NetworkBack {
         Start-Sleep -Seconds $interval
         $waited += $interval
     }
-    Write-Log "ERROR" "Network recovery timeout (${MaxWait}s)"
+    Write-Log "WARN" "Network recovery timeout (${MaxWait}s), will retry next cycle"
     return $false
 }
 
@@ -139,14 +159,15 @@ function Install-AutoStart {
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Xuanwu Hospital Network Auto Auth" -Force
-    Write-Log "OK" "Installed scheduled task: $taskName"
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Xuanwu Hospital Auto Auth" -Force
+    Write-Log "OK" "Installed: $taskName"
 }
 
 function Uninstall-AutoStart {
     $taskName = "XuanwuNetworkAuth"
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-    Write-Log "OK" "Uninstalled scheduled task: $taskName"
+    Remove-Lock
+    Write-Log "OK" "Uninstalled: $taskName"
 }
 
 # ============================================================
@@ -156,130 +177,134 @@ function Main {
     if ($Install) { Install-AutoStart; return }
     if ($Uninstall) { Uninstall-AutoStart; return }
 
-    $Config = Load-Config
-    Write-Log "OK" "===== Auto Auth System v3 Started ====="
-    Write-Log "OK" "User: $($Config.username)"
-    Write-Log "OK" "Portal: $($Config.portal_url)"
-    Write-Log "OK" "Heartbeat interval: $($Config.heartbeat_interval_sec)s"
-    Write-Log "INFO" "----------------------------------------"
+    if (-not (Test-SingleInstance)) { return }
 
-    $retryCount = 0
-    $lastHeartbeat = [datetime]::MinValue
-    $lastHttpCheck = [datetime]::MinValue
-    $lastLoginTime = [datetime]::MinValue
-    $isAuthenticated = $false
+    try {
+        $Config = Load-Config
+        Write-Log "OK" "===== Auto Auth v3 Started (PID: $PID) ====="
+        Write-Log "OK" "User: $($Config.username)"
+        Write-Log "OK" "Portal: $($Config.portal_url)"
 
-    if ($Once) {
-        $inetOk = Test-InternetAlive
-        if ($inetOk) {
-            Write-Log "OK" "Already authenticated"
-        }
-        else {
-            Invoke-Login -Config $Config
-        }
-        return
-    }
+        $retryCount = 0
+        $lastHeartbeat = [datetime]::MinValue
+        $lastHttpCheck = [datetime]::MinValue
+        $lastLoginTime = [datetime]::MinValue
+        $isAuthenticated = $false
 
-    while ($true) {
-        try {
-            $now = Get-Date
-
-            # Layer 1: Ping check (every 5s)
-            $pingOk = Test-PingAlive
-            if (-not $pingOk) {
-                if ($isAuthenticated) {
-                    Write-Log "WARN" "Network down! (Ping failed)"
-                    $isAuthenticated = $false
-                }
-                $backOk = Wait-NetworkBack
-                if ($backOk) {
-                    Write-Log "INFO" "Network back, authenticating..."
-                    $success = Invoke-Login -Config $Config
-                    if ($success) {
-                        $isAuthenticated = $true
-                        $lastHeartbeat = Get-Date
-                        $lastHttpCheck = Get-Date
-                        $lastLoginTime = Get-Date
-                        $retryCount = 0
-                    }
-                }
-                Start-Sleep -Seconds 3
-                continue
+        if ($Once) {
+            $inetOk = Test-InternetAlive
+            if ($inetOk) {
+                Write-Log "OK" "Already authenticated"
             }
+            else {
+                Invoke-Login -Config $Config
+            }
+            return
+        }
 
-            # Layer 2: HTTP auth check (every 30s)
-            $httpElapsed = ($now - $lastHttpCheck).TotalSeconds
-            $loginCooldown = ($now - $lastLoginTime).TotalSeconds
+        while ($true) {
+            try {
+                $now = Get-Date
 
-            if ($httpElapsed -ge $Config.check_interval_sec) {
-                $lastHttpCheck = Get-Date
-
-                # Skip check within 60s after login
-                if ($loginCooldown -lt 60) {
-                    $remain = [int](60 - $loginCooldown)
-                    Write-Log "INFO" "Login cooldown (${remain}s left), skip check"
-                    $isAuthenticated = $true
-                }
-                else {
-                    $inetOk = Test-InternetAlive
-                    if (-not $inetOk) {
+                # Layer 1: Ping (5s)
+                $pingOk = Test-PingAlive
+                if (-not $pingOk) {
+                    if ($isAuthenticated) {
+                        Write-Log "WARN" "Network down (Ping failed)"
                         $isAuthenticated = $false
-                        $retryCount++
-                        Write-Log "WARN" "No internet, authenticating (attempt $retryCount)"
-
-                        if ($retryCount -gt 1) {
-                            $waitSec = [Math]::Min(60, [Math]::Pow(2, $retryCount - 1) * 5)
-                            Write-Log "INFO" "Waiting ${waitSec}s before retry..."
-                            Start-Sleep -Seconds $waitSec
-                        }
-
+                    }
+                    $backOk = Wait-NetworkBack
+                    if ($backOk) {
+                        Write-Log "INFO" "Network back, authenticating..."
                         $success = Invoke-Login -Config $Config
                         if ($success) {
                             $isAuthenticated = $true
                             $lastHeartbeat = Get-Date
+                            $lastHttpCheck = Get-Date
                             $lastLoginTime = Get-Date
                             $retryCount = 0
                         }
                     }
-                    else {
-                        if (-not $isAuthenticated) {
-                            Write-Log "OK" "Authenticated, internet OK"
-                        }
-                        $isAuthenticated = $true
-                        $retryCount = 0
-                    }
+                    Start-Sleep -Seconds 3
+                    continue
                 }
-            }
 
-            # Layer 3: Heartbeat (every 3 min)
-            if ($isAuthenticated) {
-                $hbElapsed = ($now - $lastHeartbeat).TotalSeconds
-                if ($hbElapsed -ge $Config.heartbeat_interval_sec) {
-                    $hbOk = Send-Heartbeat -Config $Config
-                    if ($hbOk) {
-                        Write-Log "OK" "Heartbeat OK"
-                        $lastHeartbeat = Get-Date
+                # Layer 2: HTTPS Auth Check (30s)
+                $httpElapsed = ($now - $lastHttpCheck).TotalSeconds
+                $loginCooldown = ($now - $lastLoginTime).TotalSeconds
+
+                if ($httpElapsed -ge $Config.check_interval_sec) {
+                    $lastHttpCheck = Get-Date
+
+                    if ($loginCooldown -lt 60) {
+                        $remain = [int](60 - $loginCooldown)
+                        Write-Log "INFO" "Cooldown (${remain}s), skip check"
+                        $isAuthenticated = $true
                     }
                     else {
-                        Write-Log "WARN" "Heartbeat failed, re-checking auth"
-                        $isAuthenticated = $false
                         $inetOk = Test-InternetAlive
                         if (-not $inetOk) {
-                            Invoke-Login -Config $Config | Out-Null
+                            $isAuthenticated = $false
+                            $retryCount++
+                            Write-Log "WARN" "No internet, authenticating (attempt $retryCount)"
+
+                            if ($retryCount -gt 1) {
+                                $waitSec = [Math]::Min(60, [Math]::Pow(2, $retryCount - 1) * 5)
+                                Write-Log "INFO" "Wait ${waitSec}s before retry..."
+                                Start-Sleep -Seconds $waitSec
+                            }
+
+                            $success = Invoke-Login -Config $Config
+                            if ($success) {
+                                $isAuthenticated = $true
+                                $lastHeartbeat = Get-Date
+                                $lastLoginTime = Get-Date
+                                $retryCount = 0
+                            }
+                        }
+                        else {
+                            if (-not $isAuthenticated) {
+                                Write-Log "OK" "Authenticated, internet OK"
+                            }
                             $isAuthenticated = $true
+                            $retryCount = 0
+                        }
+                    }
+                }
+
+                # Layer 3: Heartbeat (3min)
+                if ($isAuthenticated) {
+                    $hbElapsed = ($now - $lastHeartbeat).TotalSeconds
+                    if ($hbElapsed -ge $Config.heartbeat_interval_sec) {
+                        $hbOk = Send-Heartbeat -Config $Config
+                        if ($hbOk) {
+                            Write-Log "OK" "Heartbeat OK"
                             $lastHeartbeat = Get-Date
-                            $lastLoginTime = Get-Date
+                        }
+                        else {
+                            Write-Log "WARN" "Heartbeat failed, re-checking..."
+                            $isAuthenticated = $false
+                            $inetOk = Test-InternetAlive
+                            if (-not $inetOk) {
+                                Invoke-Login -Config $Config | Out-Null
+                                $isAuthenticated = $true
+                                $lastHeartbeat = Get-Date
+                                $lastLoginTime = Get-Date
+                            }
                         }
                     }
                 }
             }
-        }
-        catch {
-            Write-Log "ERROR" "Main loop error: $($_.Exception.Message)"
-            $retryCount++
-        }
+            catch {
+                Write-Log "ERROR" "Loop error: $($_.Exception.Message)"
+                $retryCount++
+            }
 
-        Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 5
+        }
+    }
+    finally {
+        Remove-Lock
     }
 }
 
