@@ -6,7 +6,6 @@
   "password": "YOUR_PASSWORD",
   "heartbeat_interval_sec": 180,
   "check_interval_sec": 30,
-  "test_url": "http://edge-http.microsoft.com/captiveportal/generate_204",
   "max_retries": 5,
   "log_file": "auth_log.txt"
 }
