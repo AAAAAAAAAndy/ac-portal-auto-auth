@@ -99,13 +99,13 @@ cd "D:\Code_workspace\network auth"
 
 ```powershell
 # 查看任务状态
-Get-ScheduledTask -TaskName XuanwuNetworkAuth
+Get-ScheduledTask -TaskName WuxuanNetworkAuth
 
 # 停止后台任务
-Stop-ScheduledTask -TaskName XuanwuNetworkAuth
+Stop-ScheduledTask -TaskName WuxuanNetworkAuth
 
 # 启动后台任务
-Start-ScheduledTask -TaskName XuanwuNetworkAuth
+Start-ScheduledTask -TaskName WuxuanNetworkAuth
 
 # 卸载（需管理员）
 .\auto_auth.ps1 -Uninstall
