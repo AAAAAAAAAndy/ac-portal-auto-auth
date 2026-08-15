@@ -1,6 +1,6 @@
-# AC Portal Auto Authentication System
+# 宣武医院网络自动认证系统
 
-宣武医院网络自动认证系统 — 自动登录 + 心跳保活 + 断网检测 + 断线重连
+自动完成宣武医院内网认证登录、心跳保活、断网检测、断线重连。
 
 ## 功能特性
 
@@ -18,51 +18,51 @@
 ## 三层检测架构
 
 ```
-Layer 1: Ping (every 5s)
-  Ping portal server 192.168.64.21
-  fail = completely offline -> wait for recovery -> reconnect immediately
-  pass = network OK -> go to Layer 2
+第1层: Ping 检测 (每5秒)
+  → Ping 认证服务器 192.168.64.21
+  → 失败 = 完全断网，进入等待恢复模式
+  → 成功 = 物理网络正常，进入第2层
 
-Layer 2: HTTP Auth Check (every 30s)
-  Probe baidu.com / sina.com
-  redirect to portal = need auth -> auto login
-  200 OK = authenticated -> go to Layer 3
-  (skipped within 60s after login to prevent duplicate)
+第2层: HTTPS 认证检测 (每30秒)
+  → 探测 qq.com / baidu.com (HTTPS)
+  → 被重定向 = 需要认证，自动登录
+  → 200 OK = 已认证，进入第3层
+  → 登录后60秒内跳过检测，防止重复登录
 
-Layer 3: Heartbeat (every 3 min)
-  GET /out.htm to keep session alive
-  fail = maybe dropped -> trigger Layer 2 check immediately
-  pass = keep alive
+第3层: 心跳保活 (每3分钟)
+  → GET /out.htm 维持会话
+  → 失败 = 可能掉线，立即触发第2层检测
+  → 成功 = 继续保持
 ```
 
-### Disconnect Scenario Handling
+### 断网场景处理
 
-| Scenario | Detection Time | Action |
-|----------|---------------|--------|
-| Network drops at 20min | <= 5s | Ping fails -> wait for recovery -> auto reconnect |
-| 2-hour timeout logout | <= 30s | HTTP check fails -> auto re-login |
-| Portal server restart | <= 5s | Ping/HTTP fail -> wait recovery -> reconnect |
-| WiFi disconnect/reconnect | <= 5s | Ping recovers -> immediate auth |
+| 场景 | 检测时间 | 处理方式 |
+|------|----------|----------|
+| 20分钟突然断网 | ≤5秒 | Ping失败 → 等待恢复 → 自动重连 |
+| 2小时超时注销 | ≤30秒 | HTTPS检测失败 → 自动重新登录 |
+| 认证服务器重启 | ≤5秒 | Ping/HTTP失败 → 等待恢复 → 重连 |
+| WiFi断开重连 | ≤5秒 | Ping恢复 → 立即认证 |
 
-## Quick Start
+## 快速开始
 
-### 1. Copy config template
+### 1. 复制配置模板
 
 ```powershell
 Copy-Item config.example.json config.json
 ```
 
-### 2. Edit config.json
+### 2. 编辑 config.json
 
-Fill in your username and password:
+填入你的用户名和密码：
 
 ```json
 {
   "portal_url": "http://192.168.64.21",
   "login_path": "/ac_portal/login.php",
   "heartbeat_path": "/out.htm",
-  "username": "YOUR_USERNAME",
-  "password": "YOUR_PASSWORD",
+  "username": "你的用户名",
+  "password": "你的密码",
   "heartbeat_interval_sec": 180,
   "check_interval_sec": 30,
   "max_retries": 5,
@@ -70,80 +70,81 @@ Fill in your username and password:
 }
 ```
 
-### 3. Run
+### 3. 运行
 
 ```powershell
-# Foreground (with console output, good for debugging)
+# 前台运行（可看日志，调试用）
 .\auto_auth.ps1
 
-# Single login only
+# 只登录一次
 .\auto_auth.ps1 -Once
 
-# Background (silent, no window)
+# 后台静默运行
 Start-Process powershell -ArgumentList "-WindowStyle Hidden -ExecutionPolicy Bypass -File .\auto_auth.ps1" -WindowStyle Hidden
 ```
 
-### 4. Auto-start on boot
+### 4. 开机自启
 
-**Must run as Administrator** (right-click Start Menu -> Terminal Admin / PowerShell Admin):
+**必须以管理员身份运行**（右键开始菜单 → 终端管理员 / PowerShell 管理员）：
 
 ```powershell
 cd "D:\Code_workspace\network auth"
-.\auto_auth.ps1 -Install      # Install scheduled task
-.\auto_auth.ps1 -Uninstall    # Remove scheduled task
+.\auto_auth.ps1 -Install      # 安装开机自启
+.\auto_auth.ps1 -Uninstall    # 卸载开机自启
 ```
 
-After install, the script runs automatically in background on every login.
+安装后，每次开机登录自动在后台运行，无需手动启动。
 
-## Config Reference
-
-| Field | Description | Default |
-|-------|-------------|---------|
-| `portal_url` | Portal server address | `http://192.168.64.21` |
-| `login_path` | Login API path | `/ac_portal/login.php` |
-| `heartbeat_path` | Heartbeat endpoint | `/out.htm` |
-| `username` | Login username | (required) |
-| `password` | Login password | (required) |
-| `heartbeat_interval_sec` | Heartbeat interval (seconds) | `180` |
-| `check_interval_sec` | HTTP check interval (seconds) | `30` |
-| `max_retries` | Max retry count | `5` |
-| `log_file` | Log file name | `auth_log.txt` |
-
-## Manage Scheduled Task
+## 计划任务管理
 
 ```powershell
-# Check task status
+# 查看任务状态
 Get-ScheduledTask -TaskName XuanwuNetworkAuth
 
-# Stop background task
+# 停止后台任务
 Stop-ScheduledTask -TaskName XuanwuNetworkAuth
 
-# Start background task
+# 启动后台任务
 Start-ScheduledTask -TaskName XuanwuNetworkAuth
 
-# Remove scheduled task (run as admin)
+# 卸载（需管理员）
 .\auto_auth.ps1 -Uninstall
 ```
 
-## View Logs
+## 查看日志
 
 ```powershell
-# Real-time log
+# 实时查看最新日志
 Get-Content auth_log.txt -Tail 20 -Wait
 
-# Or open the file directly
+# 打开日志文件
 notepad auth_log.txt
 ```
 
-## Tech Details
+## 配置说明
 
-- **Protocol**: Huawei AC Portal (POST to `/ac_portal/login.php`)
-- **Login params**: `opr=pwdLogin`, `userName=xxx`, `pwd=xxx`
-- **Response**: JSON `{success, msg, action, location, userName}`
-- **Heartbeat**: GET `/out.htm` every 3 minutes
-- **Session timeout**: 2 hours with no traffic
-- **Test URLs**: `www.baidu.com`, `www.sina.com` (proven reachable after auth in hospital network)
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `portal_url` | 认证服务器地址 | `http://192.168.64.21` |
+| `login_path` | 登录接口路径 | `/ac_portal/login.php` |
+| `heartbeat_path` | 心跳接口路径 | `/out.htm` |
+| `username` | 用户名 | 必填 |
+| `password` | 密码 | 必填 |
+| `heartbeat_interval_sec` | 心跳间隔（秒） | `180` |
+| `check_interval_sec` | HTTP检测间隔（秒） | `30` |
+| `max_retries` | 最大重试次数 | `5` |
+| `log_file` | 日志文件名 | `auth_log.txt` |
 
-## License
+## 技术细节
+
+- **认证协议**: 华为 AC Portal
+- **登录接口**: `POST /ac_portal/login.php`，参数 `opr=pwdLogin&userName=xxx&pwd=xxx`
+- **响应格式**: JSON `{success, msg, action, location, userName}`
+- **心跳**: `GET /out.htm`，每 3 分钟一次
+- **会话超时**: 2 小时无流量自动注销
+- **测试地址**: `https://www.qq.com`、`https://www.baidu.com`（实测认证后可达）
+- **测试地址说明**: `bing.com` 和 `sina.com` 在医院网络认证后仍被 portal 拦截，不可用
+
+## 开源协议
 
 MIT
