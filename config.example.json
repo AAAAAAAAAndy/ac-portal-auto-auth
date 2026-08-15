@@ -1,0 +1,12 @@
+{
+  "portal_url": "http://192.168.64.21",
+  "login_path": "/ac_portal/login.php",
+  "heartbeat_path": "/out.htm",
+  "username": "YOUR_USERNAME",
+  "password": "YOUR_PASSWORD",
+  "heartbeat_interval_sec": 180,
+  "check_interval_sec": 30,
+  "test_url": "http://edge-http.microsoft.com/captiveportal/generate_204",
+  "max_retries": 5,
+  "log_file": "auth_log.txt"
+}
