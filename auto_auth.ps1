@@ -56,8 +56,8 @@ function Test-PingAlive {
 # ---- HTTP Auth Check (multi-URL probe) ----
 function Test-InternetAlive {
     $testUrls = @(
-        "http://www.baidu.com",
-        "http://www.sina.com"
+        "https://www.qq.com",
+        "https://www.baidu.com"
     )
     foreach ($url in $testUrls) {
         try {
