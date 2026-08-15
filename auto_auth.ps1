@@ -1,12 +1,13 @@
 # ============================================================
-# 宣武医院网络自动认证系统 v2
+# 宣武医院网络自动认证系统 v3
 # 功能: 自动登录 + 心跳保活 + 断网检测 + 断线重连
+# 修复: 检测逻辑优化，防止重复登录
 # ============================================================
 
 param(
-    [switch]$Install,   # 安装为开机自启任务
-    [switch]$Uninstall, # 卸载自启任务
-    [switch]$Once       # 只执行一次登录，不循环
+    [switch]$Install,
+    [switch]$Uninstall,
+    [switch]$Once
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,57 +46,45 @@ function Write-Log {
     Add-Content -Path $logFile -Value $line -Encoding UTF8
 }
 
-# ---- 检测1: Ping 网关/认证服务器（快速，不依赖外网）----
+# ---- Ping 检测 ----
 function Test-PingAlive {
     try {
-        $result = Test-Connection -ComputerName "192.168.64.21" -Count 1 -Quiet -TimeoutSeconds 2
-        return $result
+        return Test-Connection -ComputerName "192.168.64.21" -Count 1 -Quiet -TimeoutSeconds 2
     }
-    catch {
-        return $false
-    }
+    catch { return $false }
 }
 
-# ---- 检测2: HTTP 外网连通性（判断是否真正通过认证）----
+# ---- HTTP 认证检测（多地址探测）----
 function Test-InternetAlive {
-    param([string]$TestUrl)
-    try {
-        $resp = Invoke-WebRequest -Uri $TestUrl -UseBasicParsing -TimeoutSec 5 -MaximumRedirection 0 -ErrorAction SilentlyContinue
-        return $true
-    }
-    catch {
-        if ($_.Exception.Response.StatusCode.value__ -in @(301, 302, 303, 307, 308)) {
-            # 被重定向到认证页面 = 需要认证
-            return $false
-        }
-        return $false
-    }
-}
-
-# ---- 综合断网检测 ----
-function Test-NetworkStatus {
     <#
-    返回值:
-      "online"       - 网络正常，已认证
-      "need_auth"    - 能ping通网关但需要认证
-      "offline"      - 完全断网（ping不通）
+    尝试多个测试地址，任一成功即判定为已认证。
+    使用 generate_204 端点（返回 204 = 已连通）和普通 HTTP 站点。
     #>
-    param([string]$TestUrl)
+    $testUrls = @(
+        "http://connect.rom.miui.com/generate_204",
+        "http://www.msftconnecttest.com/connecttest.txt",
+        "http://www.baidu.com"
+    )
 
-    # 第一步: Ping 认证服务器
-    $pingOk = Test-PingAlive
-    if (-not $pingOk) {
-        return "offline"
+    foreach ($url in $testUrls) {
+        try {
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5 -MaximumRedirection 0 -ErrorAction SilentlyContinue
+            # 200 或 204 都算成功
+            if ($resp.StatusCode -in @(200, 204)) {
+                return $true
+            }
+        }
+        catch {
+            # 3xx 重定向 = 被 portal 拦截 = 需要认证
+            if ($_.Exception.Response.StatusCode.value__ -in @(301, 302, 303, 307, 308)) {
+                return $false
+            }
+            # 连接超时/DNS 失败等，尝试下一个地址
+            continue
+        }
     }
-
-    # 第二步: 检测外网是否通
-    $inetOk = Test-InternetAlive -TestUrl $TestUrl
-    if ($inetOk) {
-        return "online"
-    }
-    else {
-        return "need_auth"
-    }
+    # 所有地址都失败
+    return $false
 }
 
 # ---- 执行登录 ----
@@ -136,19 +125,16 @@ function Send-Heartbeat {
         $null = Invoke-WebRequest -Uri $hbUrl -UseBasicParsing -TimeoutSec 5
         return $true
     }
-    catch {
-        return $false
-    }
+    catch { return $false }
 }
 
-# ---- 等待网络恢复（断网时用）----
+# ---- 等待网络恢复 ----
 function Wait-NetworkBack {
-    param([string]$PortalUrl, [int]$MaxWait = 300)
+    param([int]$MaxWait = 300)
     $waited = 0
     $interval = 3
     while ($waited -lt $MaxWait) {
-        $pingOk = Test-PingAlive
-        if ($pingOk) {
+        if (Test-PingAlive) {
             Write-Log "OK" "网络恢复连通 (等待了${waited}秒)"
             return $true
         }
@@ -177,31 +163,29 @@ function Uninstall-AutoStart {
 }
 
 # ============================================================
-# 主循环 - 三层检测架构
+# 主循环
 # ============================================================
 function Main {
-    # 处理安装/卸载参数
     if ($Install) { Install-AutoStart; return }
     if ($Uninstall) { Uninstall-AutoStart; return }
 
     $Config = Load-Config
-    Write-Log "OK" "===== 自动认证系统 v2 启动 ====="
+    Write-Log "OK" "===== 自动认证系统 v3 启动 ====="
     Write-Log "OK" "用户: $($Config.username)"
     Write-Log "OK" "认证服务器: $($Config.portal_url)"
     Write-Log "OK" "心跳间隔: $($Config.heartbeat_interval_sec)秒"
-    Write-Log "OK" "检测策略: Ping(5秒) + HTTP(30秒) + 心跳($($Config.heartbeat_interval_sec)秒)"
     Write-Log "INFO" "----------------------------------------"
 
     $retryCount = 0
     $lastHeartbeat = [datetime]::MinValue
     $lastHttpCheck = [datetime]::MinValue
+    $lastLoginTime = [datetime]::MinValue   # 上次登录时间（防重复登录）
     $isAuthenticated = $false
-    $consecutiveFail = 0
 
     # 单次模式
     if ($Once) {
-        $status = Test-NetworkStatus -TestUrl $Config.test_url
-        if ($status -eq "online") {
+        $inetOk = Test-InternetAlive
+        if ($inetOk) {
             Write-Log "OK" "网络已认证，无需重复登录"
         }
         else {
@@ -216,82 +200,81 @@ function Main {
             $now = Get-Date
 
             # ──────────────────────────────────────
-            # 第1层: 快速 Ping 检测 (每5秒)
-            # 检测到断网时立即进入等待恢复流程
+            # 第1层: Ping 检测 (每5秒)
             # ──────────────────────────────────────
             $pingOk = Test-PingAlive
 
             if (-not $pingOk) {
-                # Ping 失败 = 完全断网
                 if ($isAuthenticated) {
-                    Write-Log "WARN" "检测到断网! (Ping 认证服务器失败)"
+                    Write-Log "WARN" "检测到断网! (Ping 失败)"
                     $isAuthenticated = $false
-                    $consecutiveFail++
                 }
-
-                # 等待网络恢复
-                $backOk = Wait-NetworkBack -PortalUrl $Config.portal_url
+                $backOk = Wait-NetworkBack
                 if ($backOk) {
-                    # 网络恢复后立即尝试认证
                     Write-Log "INFO" "网络恢复，立即尝试认证..."
                     $success = Invoke-Login -Config $Config
                     if ($success) {
                         $isAuthenticated = $true
                         $lastHeartbeat = Get-Date
                         $lastHttpCheck = Get-Date
+                        $lastLoginTime = Get-Date
                         $retryCount = 0
-                        $consecutiveFail = 0
                     }
                 }
-                # 不管成功与否，短暂等待后继续循环
                 Start-Sleep -Seconds 3
                 continue
             }
 
-            # Ping 通了，网络物理层正常
             # ──────────────────────────────────────
-            # 第2层: HTTP 认证状态检测 (每30秒)
-            # 判断是否需要重新认证
+            # 第2层: HTTP 认证检测 (每30秒)
+            # 关键: 登录后冷却期内跳过检测
             # ──────────────────────────────────────
             $httpElapsed = ($now - $lastHttpCheck).TotalSeconds
+            $loginCooldown = ($now - $lastLoginTime).TotalSeconds
+
             if ($httpElapsed -ge $Config.check_interval_sec) {
-                $inetOk = Test-InternetAlive -TestUrl $Config.test_url
                 $lastHttpCheck = Get-Date
 
-                if (-not $inetOk) {
-                    # 能 Ping 通但外网不通 = 需要认证
-                    $isAuthenticated = $false
-                    $consecutiveFail++
-                    Write-Log "WARN" "外网不通，需要认证 (连续失败: $consecutiveFail 次)"
-
-                    $success = Invoke-Login -Config $Config
-                    if ($success) {
-                        $isAuthenticated = $true
-                        $lastHeartbeat = Get-Date
-                        $retryCount = 0
-                        $consecutiveFail = 0
-                    }
-                    else {
-                        $retryCount++
-                        $waitSec = [Math]::Min(60, [Math]::Pow(2, $retryCount) * 2)
-                        Write-Log "WARN" "登录失败，${waitSec}秒后重试"
-                        Start-Sleep -Seconds $waitSec
-                        continue
-                    }
+                # 登录后 60 秒内不重复检测，避免刚登录就被判为未认证
+                if ($loginCooldown -lt 60) {
+                    Write-Log "INFO" "登录冷却中 ($([int](60 - $loginCooldown))秒)，跳过检测"
+                    $isAuthenticated = $true
                 }
                 else {
-                    # 一切正常
-                    if (-not $isAuthenticated) {
-                        Write-Log "OK" "网络已认证，外网连通"
-                        $isAuthenticated = $true
+                    $inetOk = Test-InternetAlive
+
+                    if (-not $inetOk) {
+                        $isAuthenticated = $false
+                        $retryCount++
+                        Write-Log "WARN" "外网不通，尝试认证 (第${retryCount}次)"
+
+                        # 连续失败间隔递增: 5,10,20,40,60秒
+                        if ($retryCount -gt 1) {
+                            $waitSec = [Math]::Min(60, [Math]::Pow(2, $retryCount - 1) * 5)
+                            Write-Log "INFO" "等待 ${waitSec} 秒后重试..."
+                            Start-Sleep -Seconds $waitSec
+                        }
+
+                        $success = Invoke-Login -Config $Config
+                        if ($success) {
+                            $isAuthenticated = $true
+                            $lastHeartbeat = Get-Date
+                            $lastLoginTime = Get-Date
+                            $retryCount = 0
+                        }
                     }
-                    $consecutiveFail = 0
+                    else {
+                        if (-not $isAuthenticated) {
+                            Write-Log "OK" "网络已认证，外网连通"
+                        }
+                        $isAuthenticated = $true
+                        $retryCount = 0
+                    }
                 }
             }
 
             # ──────────────────────────────────────
             # 第3层: 心跳保活 (每3分钟)
-            # 保持认证会话不过期
             # ──────────────────────────────────────
             if ($isAuthenticated) {
                 $hbElapsed = ($now - $lastHeartbeat).TotalSeconds
@@ -302,30 +285,26 @@ function Main {
                         $lastHeartbeat = Get-Date
                     }
                     else {
-                        Write-Log "WARN" "心跳失败，可能已掉线，立即重新检测"
+                        Write-Log "WARN" "心跳失败，重新检测认证状态"
                         $isAuthenticated = $false
-                        # 心跳失败后不等下一轮，立即检测
-                        $inetOk = Test-InternetAlive -TestUrl $Config.test_url
+                        $inetOk = Test-InternetAlive
                         if (-not $inetOk) {
                             Invoke-Login -Config $Config | Out-Null
                             $isAuthenticated = $true
                             $lastHeartbeat = Get-Date
+                            $lastLoginTime = Get-Date
                         }
                     }
                 }
             }
-
-            $retryCount = 0
         }
         catch {
             Write-Log "ERROR" "主循环异常: $($_.Exception.Message)"
             $retryCount++
         }
 
-        # 快速 Ping 间隔: 5秒
         Start-Sleep -Seconds 5
     }
 }
 
-# 运行
 Main
