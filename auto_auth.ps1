@@ -1,6 +1,6 @@
 # ============================================================
-# å®£æ­¦åŒ»é™¢ç½‘ç»œè‡ªåŠ¨è®¤è¯ç³»ç»Ÿ v3
-# åŠŸèƒ½: è‡ªåŠ¨ç™»å½• + å¿ƒè·³ä¿æ´» + æ–­ç½‘æ£€æµ‹ + æ–­çº¿é‡è¿
+# ĞûÎäÒ½ÔºÍøÂç×Ô¶¯ÈÏÖ¤ÏµÍ³ v3
+# ¹¦ÄÜ: ×Ô¶¯µÇÂ¼ + ĞÄÌø±£»î + ¶ÏÍø¼ì²â + ¶ÏÏßÖØÁ¬
 # ============================================================
 
 param(
@@ -14,14 +14,13 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ConfigPath = Join-Path $ScriptDir "config.json"
 $LockFile = Join-Path $ScriptDir ".lock"
 
-# ---- å•å®ä¾‹æ£€æµ‹ ----
 function Test-SingleInstance {
     if ($Once -or $Install -or $Uninstall) { return $true }
     if (Test-Path $LockFile) {
         $lockPid = Get-Content $LockFile -ErrorAction SilentlyContinue
         $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
         if ($proc) {
-            Write-Host "[WARN] å·²æœ‰å®ä¾‹è¿è¡Œä¸­ (PID: $lockPid)ï¼Œé€€å‡º" -ForegroundColor Yellow
+            Write-Host "[WARN] ÒÑÓĞÊµÀıÔËĞĞÖĞ (PID: $lockPid)£¬ÍË³ö" -ForegroundColor Yellow
             return $false
         }
     }
@@ -33,21 +32,19 @@ function Remove-Lock {
     if (Test-Path $LockFile) { Remove-Item $LockFile -Force -ErrorAction SilentlyContinue }
 }
 
-# ---- åŠ è½½é…ç½® ----
 function Load-Config {
     if (-not (Test-Path $ConfigPath)) {
-        Write-Log "ERROR" "é…ç½®æ–‡ä»¶ä¸å­˜åœ¨: $ConfigPath"
+        Write-Log "ERROR" "ÅäÖÃÎÄ¼ş²»´æÔÚ: $ConfigPath"
         exit 1
     }
     $cfg = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]::IsNullOrEmpty($cfg.password)) {
-        Write-Log "ERROR" "å¯†ç æœªé…ç½®ï¼Œè¯·åœ¨ config.json ä¸­å¡«å†™ password"
+        Write-Log "ERROR" "ÃÜÂëÎ´ÅäÖÃ"
         exit 1
     }
     return $cfg
 }
 
-# ---- æ—¥å¿— ----
 function Write-Log {
     param([string]$Level, [string]$Message)
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -65,7 +62,6 @@ function Write-Log {
     [System.IO.File]::AppendAllText($logFile, "$line`r`n", [System.Text.Encoding]::GetEncoding("GBK"))
 }
 
-# ---- Ping è®¤è¯æœåŠ¡å™¨ ----
 function Test-PingAlive {
     try {
         return Test-Connection -ComputerName "192.168.64.21" -Count 1 -Quiet -TimeoutSeconds 2
@@ -73,7 +69,6 @@ function Test-PingAlive {
     catch { return $false }
 }
 
-# ---- HTTPS å¤–ç½‘æ£€æµ‹ ----
 function Test-InternetAlive {
     $testUrls = @(
         "https://www.qq.com",
@@ -96,7 +91,6 @@ function Test-InternetAlive {
     return $false
 }
 
-# ---- ç™»å½• ----
 function Invoke-Login {
     param($Config)
     $loginUrl = "$($Config.portal_url)$($Config.login_path)"
@@ -109,22 +103,21 @@ function Invoke-Login {
         $resp = Invoke-WebRequest -Uri $loginUrl -Method POST -Body $body -UseBasicParsing -TimeoutSec 10
         $json = $resp.Content | ConvertFrom-Json
         if ($json.success -eq $true -or $json.success -eq "true") {
-            Write-Log "OK" "ç™»å½•æˆåŠŸ! ç”¨æˆ·: $($json.userName)"
+            Write-Log "OK" "µÇÂ¼³É¹¦! ÓÃ»§: $($json.userName)"
             Start-Sleep -Seconds 3
             return $true
         }
         else {
-            Write-Log "WARN" "ç™»å½•å¤±è´¥: $($json.msg)"
+            Write-Log "WARN" "µÇÂ¼Ê§°Ü: $($json.msg)"
             return $false
         }
     }
     catch {
-        Write-Log "ERROR" "ç™»å½•å¼‚å¸¸: $($_.Exception.Message)"
+        Write-Log "ERROR" "µÇÂ¼Òì³£: $($_.Exception.Message)"
         return $false
     }
 }
 
-# ---- å¿ƒè·³ä¿æ´» ----
 function Send-Heartbeat {
     param($Config)
     $hbUrl = "$($Config.portal_url)$($Config.heartbeat_path)"
@@ -135,44 +128,39 @@ function Send-Heartbeat {
     catch { return $false }
 }
 
-# ---- ç­‰å¾…ç½‘ç»œæ¢å¤ ----
 function Wait-NetworkBack {
     param([int]$MaxWait = 60)
     $waited = 0
     $interval = 3
     while ($waited -lt $MaxWait) {
         if (Test-PingAlive) {
-            Write-Log "OK" "ç½‘ç»œæ¢å¤è¿é€š (ç­‰å¾…äº†${waited}ç§’)"
+            Write-Log "OK" "ÍøÂç»Ö¸´Á¬Í¨ (µÈ´ıÁË${waited}Ãë)"
             return $true
         }
         Start-Sleep -Seconds $interval
         $waited += $interval
     }
-    Write-Log "WARN" "ç­‰å¾…ç½‘ç»œæ¢å¤è¶…æ—¶ (${MaxWait}ç§’)ï¼Œä¸‹è½®é‡è¯•"
+    Write-Log "WARN" "µÈ´ıÍøÂç»Ö¸´³¬Ê±, ÏÂÂÖÖØÊÔ"
     return $false
 }
 
-# ---- å®‰è£…/å¸è½½å¼€æœºè‡ªå¯ ----
 function Install-AutoStart {
     $taskName = "WUxuan"
     $scriptPath = $MyInvocation.MyCommand.Path
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "å®£æ­¦åŒ»é™¢ç½‘ç»œè‡ªåŠ¨è®¤è¯" -Force
-    Write-Log "OK" "å·²å®‰è£…å¼€æœºè‡ªå¯ä»»åŠ¡: $taskName"
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "ĞûÎäÒ½ÔºÍøÂç×Ô¶¯ÈÏÖ¤" -Force
+    Write-Log "OK" "ÒÑ°²×°¿ª»ú×ÔÆôÈÎÎñ: $taskName"
 }
 
 function Uninstall-AutoStart {
     $taskName = "WUxuan"
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Lock
-    Write-Log "OK" "å·²å¸è½½å¼€æœºè‡ªå¯ä»»åŠ¡: $taskName"
+    Write-Log "OK" "ÒÑĞ¶ÔØ¿ª»ú×ÔÆôÈÎÎñ: $taskName"
 }
 
-# ============================================================
-# ä¸»å¾ªç¯
-# ============================================================
 function Main {
     if ($Install) { Install-AutoStart; return }
     if ($Uninstall) { Uninstall-AutoStart; return }
@@ -181,10 +169,10 @@ function Main {
 
     try {
         $Config = Load-Config
-        Write-Log "OK" "===== è‡ªåŠ¨è®¤è¯ç³»ç»Ÿ v3 å¯åŠ¨ (PID: $PID) ====="
-        Write-Log "OK" "ç”¨æˆ·: $($Config.username)"
-        Write-Log "OK" "è®¤è¯æœåŠ¡å™¨: $($Config.portal_url)"
-        Write-Log "OK" "å¿ƒè·³é—´éš”: $($Config.heartbeat_interval_sec)ç§’"
+        Write-Log "OK" "===== ×Ô¶¯ÈÏÖ¤ÏµÍ³ v3 Æô¶¯ (PID: $PID) ====="
+        Write-Log "OK" "ÓÃ»§: $($Config.username)"
+        Write-Log "OK" "ÈÏÖ¤·şÎñÆ÷: $($Config.portal_url)"
+        Write-Log "OK" "ĞÄÌø¼ä¸ô: $($Config.heartbeat_interval_sec)Ãë"
         Write-Log "INFO" "----------------------------------------"
 
         $retryCount = 0
@@ -193,11 +181,10 @@ function Main {
         $lastLoginTime = [datetime]::MinValue
         $isAuthenticated = $false
 
-        # å•æ¬¡æ¨¡å¼
         if ($Once) {
             $inetOk = Test-InternetAlive
             if ($inetOk) {
-                Write-Log "OK" "ç½‘ç»œå·²è®¤è¯ï¼Œæ— éœ€é‡å¤ç™»å½•"
+                Write-Log "OK" "ÍøÂçÒÑÈÏÖ¤£¬ÎŞĞèÖØ¸´µÇÂ¼"
             }
             else {
                 Invoke-Login -Config $Config
@@ -205,21 +192,20 @@ function Main {
             return
         }
 
-        # æŒç»­ç›‘æ§æ¨¡å¼
         while ($true) {
             try {
                 $now = Get-Date
 
-                # â”€â”€ ç¬¬1å±‚: Ping æ£€æµ‹ (æ¯5ç§’) â”€â”€
+                # Ping ¼ì²â (Ã¿5Ãë)
                 $pingOk = Test-PingAlive
                 if (-not $pingOk) {
                     if ($isAuthenticated) {
-                        Write-Log "WARN" "æ£€æµ‹åˆ°æ–­ç½‘! (Ping å¤±è´¥)"
+                        Write-Log "WARN" "¼ì²âµ½¶ÏÍø! (Ping Ê§°Ü)"
                         $isAuthenticated = $false
                     }
                     $backOk = Wait-NetworkBack
                     if ($backOk) {
-                        Write-Log "INFO" "ç½‘ç»œæ¢å¤ï¼Œç«‹å³è®¤è¯..."
+                        Write-Log "INFO" "ÍøÂç»Ö¸´£¬Á¢¼´ÈÏÖ¤..."
                         $success = Invoke-Login -Config $Config
                         if ($success) {
                             $isAuthenticated = $true
@@ -233,17 +219,16 @@ function Main {
                     continue
                 }
 
-                # â”€â”€ ç¬¬2å±‚: HTTPS è®¤è¯æ£€æµ‹ (æ¯30ç§’) â”€â”€
+                # HTTPS ÈÏÖ¤¼ì²â (Ã¿30Ãë)
                 $httpElapsed = ($now - $lastHttpCheck).TotalSeconds
                 $loginCooldown = ($now - $lastLoginTime).TotalSeconds
 
                 if ($httpElapsed -ge $Config.check_interval_sec) {
                     $lastHttpCheck = Get-Date
 
-                    # ç™»å½•å60ç§’å†…è·³è¿‡æ£€æµ‹
                     if ($loginCooldown -lt 60) {
                         $remain = [int](60 - $loginCooldown)
-                        Write-Log "INFO" "ç™»å½•å†·å´ä¸­ (${remain}ç§’)ï¼Œè·³è¿‡æ£€æµ‹"
+                        Write-Log "INFO" "µÇÂ¼ÀäÈ´ÖĞ, Ìø¹ı¼ì²â"
                         $isAuthenticated = $true
                     }
                     else {
@@ -251,11 +236,11 @@ function Main {
                         if (-not $inetOk) {
                             $isAuthenticated = $false
                             $retryCount++
-                            Write-Log "WARN" "å¤–ç½‘ä¸é€šï¼Œå°è¯•è®¤è¯ (ç¬¬${retryCount}æ¬¡)"
+                            Write-Log "WARN" "ÍâÍø²»Í¨£¬³¢ÊÔÈÏÖ¤ (µÚ${retryCount}´Î)"
 
                             if ($retryCount -gt 1) {
                                 $waitSec = [Math]::Min(60, [Math]::Pow(2, $retryCount - 1) * 5)
-                                Write-Log "INFO" "ç­‰å¾… ${waitSec} ç§’åé‡è¯•..."
+                                Write-Log "INFO" "µÈ´ı${waitSec}ÃëºóÖØÊÔ..."
                                 Start-Sleep -Seconds $waitSec
                             }
 
@@ -269,7 +254,7 @@ function Main {
                         }
                         else {
                             if (-not $isAuthenticated) {
-                                Write-Log "OK" "ç½‘ç»œå·²è®¤è¯ï¼Œå¤–ç½‘è¿é€š"
+                                Write-Log "OK" "ÍøÂçÒÑÈÏÖ¤£¬ÍâÍøÁ¬Í¨"
                             }
                             $isAuthenticated = $true
                             $retryCount = 0
@@ -277,17 +262,17 @@ function Main {
                     }
                 }
 
-                # â”€â”€ ç¬¬3å±‚: å¿ƒè·³ä¿æ´» (æ¯3åˆ†é’Ÿ) â”€â”€
+                # ĞÄÌø±£»î (Ã¿3·ÖÖÓ)
                 if ($isAuthenticated) {
                     $hbElapsed = ($now - $lastHeartbeat).TotalSeconds
                     if ($hbElapsed -ge $Config.heartbeat_interval_sec) {
                         $hbOk = Send-Heartbeat -Config $Config
                         if ($hbOk) {
-                            Write-Log "OK" "å¿ƒè·³ä¿æ´»æˆåŠŸ"
+                            Write-Log "OK" "ĞÄÌø±£»î³É¹¦"
                             $lastHeartbeat = Get-Date
                         }
                         else {
-                            Write-Log "WARN" "å¿ƒè·³å¤±è´¥ï¼Œé‡æ–°æ£€æµ‹è®¤è¯çŠ¶æ€"
+                            Write-Log "WARN" "ĞÄÌøÊ§°Ü£¬ÖØĞÂ¼ì²âÈÏÖ¤×´Ì¬"
                             $isAuthenticated = $false
                             $inetOk = Test-InternetAlive
                             if (-not $inetOk) {
@@ -301,7 +286,7 @@ function Main {
                 }
             }
             catch {
-                Write-Log "ERROR" "ä¸»å¾ªç¯å¼‚å¸¸: $($_.Exception.Message)"
+                Write-Log "ERROR" "Ö÷Ñ­»·Òì³£: $($_.Exception.Message)"
                 $retryCount++
             }
 
