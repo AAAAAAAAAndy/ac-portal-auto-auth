@@ -61,9 +61,8 @@ function Test-InternetAlive {
     使用 generate_204 端点（返回 204 = 已连通）和普通 HTTP 站点。
     #>
     $testUrls = @(
-        "http://connect.rom.miui.com/generate_204",
-        "http://www.msftconnecttest.com/connecttest.txt",
-        "http://www.baidu.com"
+        "http://www.bing.com",
+        "http://www.qq.com"
     )
 
     foreach ($url in $testUrls) {
