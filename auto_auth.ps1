@@ -1,6 +1,6 @@
 # ============================================================
-# 宣武医院网络自动认证系统 v3
-# 功能: 自动登录 + 心跳保活 + 断网检测 + 断线重连
+# ?????????????????? v3
+# ????: ?????? + ???????? + ??????? + ????????
 # ============================================================
 
 param(
@@ -20,7 +20,7 @@ function Test-SingleInstance {
         $lockPid = Get-Content $LockFile -ErrorAction SilentlyContinue
         $proc = Get-Process -Id $lockPid -ErrorAction SilentlyContinue
         if ($proc) {
-            Write-Host "[WARN] 已有实例运行中 (PID: $lockPid)，退出" -ForegroundColor Yellow
+            Write-Host "[WARN] ????????????? (PID: $lockPid)?????" -ForegroundColor Yellow
             return $false
         }
     }
@@ -34,12 +34,12 @@ function Remove-Lock {
 
 function Load-Config {
     if (-not (Test-Path $ConfigPath)) {
-        Write-Log "ERROR" "配置文件不存在: $ConfigPath"
+        Write-Log "ERROR" "?????????????: $ConfigPath"
         exit 1
     }
     $cfg = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]::IsNullOrEmpty($cfg.password)) {
-        Write-Log "ERROR" "密码未配置"
+        Write-Log "ERROR" "????δ????"
         exit 1
     }
     return $cfg
@@ -103,17 +103,17 @@ function Invoke-Login {
         $resp = Invoke-WebRequest -Uri $loginUrl -Method POST -Body $body -UseBasicParsing -TimeoutSec 10
         $json = $resp.Content | ConvertFrom-Json
         if ($json.success -eq $true -or $json.success -eq "true") {
-            Write-Log "OK" "登录成功! 用户: $($json.userName)"
+            Write-Log "OK" "??????! ???: $($json.userName)"
             Start-Sleep -Seconds 3
             return $true
         }
         else {
-            Write-Log "WARN" "登录失败: $($json.msg)"
+            Write-Log "WARN" "??????: $($json.msg)"
             return $false
         }
     }
     catch {
-        Write-Log "ERROR" "登录异常: $($_.Exception.Message)"
+        Write-Log "ERROR" "?????: $($_.Exception.Message)"
         return $false
     }
 }
@@ -134,31 +134,31 @@ function Wait-NetworkBack {
     $interval = 3
     while ($waited -lt $MaxWait) {
         if (Test-PingAlive) {
-            Write-Log "OK" "网络恢复连通 (等待了${waited}秒)"
+            Write-Log "OK" "????????? (?????${waited}??)"
             return $true
         }
         Start-Sleep -Seconds $interval
         $waited += $interval
     }
-    Write-Log "WARN" "等待网络恢复超时, 下轮重试"
+    Write-Log "WARN" "????????????, ????????"
     return $false
 }
 
 function Install-AutoStart {
-    $taskName = "WUxuan"
+    $taskName = "WuxuanNetworkAuth"
     $scriptPath = $MyInvocation.MyCommand.Path
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "宣武医院网络自动认证" -Force
-    Write-Log "OK" "已安装开机自启任务: $taskName"
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "????????????????" -Force
+    Write-Log "OK" "????????????????: $taskName"
 }
 
 function Uninstall-AutoStart {
-    $taskName = "WUxuan"
+    $taskName = "WuxuanNetworkAuth"
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Lock
-    Write-Log "OK" "已卸载开机自启任务: $taskName"
+    Write-Log "OK" "??ж?????????????: $taskName"
 }
 
 function Main {
@@ -169,10 +169,10 @@ function Main {
 
     try {
         $Config = Load-Config
-        Write-Log "OK" "===== 自动认证系统 v3 启动 (PID: $PID) ====="
-        Write-Log "OK" "用户: $($Config.username)"
-        Write-Log "OK" "认证服务器: $($Config.portal_url)"
-        Write-Log "OK" "心跳间隔: $($Config.heartbeat_interval_sec)秒"
+        Write-Log "OK" "===== ???????? v3 ???? (PID: $PID) ====="
+        Write-Log "OK" "???: $($Config.username)"
+        Write-Log "OK" "?????????: $($Config.portal_url)"
+        Write-Log "OK" "???????: $($Config.heartbeat_interval_sec)??"
         Write-Log "INFO" "----------------------------------------"
 
         $retryCount = 0
@@ -184,7 +184,7 @@ function Main {
         if ($Once) {
             $inetOk = Test-InternetAlive
             if ($inetOk) {
-                Write-Log "OK" "网络已认证，无需重复登录"
+                Write-Log "OK" "?????????????????????"
             }
             else {
                 Invoke-Login -Config $Config
@@ -196,16 +196,16 @@ function Main {
             try {
                 $now = Get-Date
 
-                # Ping 检测 (每5秒)
+                # Ping ??? (?5??)
                 $pingOk = Test-PingAlive
                 if (-not $pingOk) {
                     if ($isAuthenticated) {
-                        Write-Log "WARN" "检测到断网! (Ping 失败)"
+                        Write-Log "WARN" "???????! (Ping ???)"
                         $isAuthenticated = $false
                     }
                     $backOk = Wait-NetworkBack
                     if ($backOk) {
-                        Write-Log "INFO" "网络恢复，立即认证..."
+                        Write-Log "INFO" "???????????????..."
                         $success = Invoke-Login -Config $Config
                         if ($success) {
                             $isAuthenticated = $true
@@ -219,7 +219,7 @@ function Main {
                     continue
                 }
 
-                # HTTPS 认证检测 (每30秒)
+                # HTTPS ?????? (?30??)
                 $httpElapsed = ($now - $lastHttpCheck).TotalSeconds
                 $loginCooldown = ($now - $lastLoginTime).TotalSeconds
 
@@ -228,7 +228,7 @@ function Main {
 
                     if ($loginCooldown -lt 60) {
                         $remain = [int](60 - $loginCooldown)
-                        Write-Log "INFO" "登录冷却中, 跳过检测"
+                        Write-Log "INFO" "????????, ???????"
                         $isAuthenticated = $true
                     }
                     else {
@@ -236,11 +236,11 @@ function Main {
                         if (-not $inetOk) {
                             $isAuthenticated = $false
                             $retryCount++
-                            Write-Log "WARN" "外网不通，尝试认证 (第${retryCount}次)"
+                            Write-Log "WARN" "???????????????? (??${retryCount}??)"
 
                             if ($retryCount -gt 1) {
                                 $waitSec = [Math]::Min(60, [Math]::Pow(2, $retryCount - 1) * 5)
-                                Write-Log "INFO" "等待${waitSec}秒后重试..."
+                                Write-Log "INFO" "???${waitSec}???????..."
                                 Start-Sleep -Seconds $waitSec
                             }
 
@@ -254,7 +254,7 @@ function Main {
                         }
                         else {
                             if (-not $isAuthenticated) {
-                                Write-Log "OK" "网络已认证，外网连通"
+                                Write-Log "OK" "??????????????????"
                             }
                             $isAuthenticated = $true
                             $retryCount = 0
@@ -262,17 +262,17 @@ function Main {
                     }
                 }
 
-                # 心跳保活 (每3分钟)
+                # ???????? (?3????)
                 if ($isAuthenticated) {
                     $hbElapsed = ($now - $lastHeartbeat).TotalSeconds
                     if ($hbElapsed -ge $Config.heartbeat_interval_sec) {
                         $hbOk = Send-Heartbeat -Config $Config
                         if ($hbOk) {
-                            Write-Log "OK" "心跳保活成功"
+                            Write-Log "OK" "??????????"
                             $lastHeartbeat = Get-Date
                         }
                         else {
-                            Write-Log "WARN" "心跳失败，重新检测认证状态"
+                            Write-Log "WARN" "???????????????????"
                             $isAuthenticated = $false
                             $inetOk = Test-InternetAlive
                             if (-not $inetOk) {
@@ -286,7 +286,7 @@ function Main {
                 }
             }
             catch {
-                Write-Log "ERROR" "主循环异常: $($_.Exception.Message)"
+                Write-Log "ERROR" "???????: $($_.Exception.Message)"
                 $retryCount++
             }
 
