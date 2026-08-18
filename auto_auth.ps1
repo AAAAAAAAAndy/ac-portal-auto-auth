@@ -109,7 +109,7 @@ function Test-InternetAlive {
                     # 被 portal 拦截 = 需要认证
                     return $false
                 }
-                # 正常站点跳转 (如 qq.com → www.qq.com) = 外网通
+                # 正常站点跳转 (如 qq.com -> www.qq.com) = 外网通
                 return $true
             }
             # 超时或其他错误，尝试下一个
