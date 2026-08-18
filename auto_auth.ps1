@@ -92,20 +92,27 @@ function Test-PortalReachable {
 function Test-InternetAlive {
     $testUrls = @(
         "https://www.qq.com",
-        "https://www.bing.com"
+        "https://www.baidu.com"
     )
     foreach ($url in $testUrls) {
         try {
-            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 5 -MaximumRedirection 0 -ErrorAction SilentlyContinue
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10 -MaximumRedirection 0 -ErrorAction SilentlyContinue
             if ($resp.StatusCode -in @(200, 204)) {
                 return $true
             }
         }
         catch {
-            # 3xx 重定向也说明外网是通的 (HTTP→HTTPS 跳转)
+            # 3xx 重定向: 检查是否被 portal 拦截
             if ($_.Exception.Response.StatusCode.value__ -in @(301, 302, 303, 307, 308)) {
+                $location = $_.Exception.Response.Headers["Location"]
+                if ($location -and $location -match "192\.168\.64\.21|ac_portal") {
+                    # 被 portal 拦截 = 需要认证
+                    return $false
+                }
+                # 正常站点跳转 (如 qq.com → www.qq.com) = 外网通
                 return $true
             }
+            # 超时或其他错误，尝试下一个
             continue
         }
     }
