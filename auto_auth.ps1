@@ -9,7 +9,7 @@ param(
     [switch]$Once
 )
 
-# 控制台 UTF-8 输出
+# 控制台 UTF-8 输出 (防止 Task Scheduler 环境乱码)
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
@@ -51,7 +51,7 @@ function Load-Config {
     return $cfg
 }
 
-# ---- 日志 (控制台 UTF-8, 文件 GBK) ----
+# ---- 日志 (控制台 + 文件均 UTF-8) ----
 function Write-Log {
     param([string]$Level, [string]$Message)
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -66,22 +66,33 @@ function Write-Log {
         }
     )
     $logFile = Join-Path $ScriptDir "auth_log.txt"
-    [System.IO.File]::AppendAllText($logFile, "$line`r`n", [System.Text.Encoding]::GetEncoding("GBK"))
+    [System.IO.File]::AppendAllText($logFile, "$line`r`n", [System.Text.Encoding]::UTF8)
 }
 
-# ---- Ping 认证服务器 ----
-function Test-PingAlive {
+# ---- 认证服务器连通性检测 (仅用于登录前确认门户可达) ----
+function Test-PortalReachable {
     try {
-        return Test-Connection -ComputerName "192.168.64.21" -Count 1 -Quiet -TimeoutSeconds 2
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $result = $tcp.BeginConnect("192.168.64.21", 80, $null, $null)
+        $success = $result.AsyncWaitHandle.WaitOne(2000, $false)
+        if ($success -and $tcp.Connected) {
+            $tcp.Close()
+            return $true
+        }
+        $tcp.Close()
+        return $false
     }
-    catch { return $false }
+    catch {
+        try { $tcp.Close() } catch {}
+        return $false
+    }
 }
 
-# ---- HTTPS 外网检测 ----
+# ---- HTTPS 外网检测 (网络是否真正可用) ----
 function Test-InternetAlive {
     $testUrls = @(
         "https://www.qq.com",
-        "https://www.baidu.com"
+        "https://www.bing.com"
     )
     foreach ($url in $testUrls) {
         try {
@@ -91,8 +102,9 @@ function Test-InternetAlive {
             }
         }
         catch {
+            # 3xx 重定向也说明外网是通的 (HTTP→HTTPS 跳转)
             if ($_.Exception.Response.StatusCode.value__ -in @(301, 302, 303, 307, 308)) {
-                return $false
+                return $true
             }
             continue
         }
@@ -139,27 +151,27 @@ function Send-Heartbeat {
     catch { return $false }
 }
 
-# ---- 等待网络恢复 ----
+# ---- 等待外网恢复 ----
 function Wait-NetworkBack {
     param([int]$MaxWait = 60)
     $waited = 0
     $interval = 3
     while ($waited -lt $MaxWait) {
-        if (Test-PingAlive) {
-            Write-Log "OK" "网络恢复连通 (等待了${waited}秒)"
+        if (Test-InternetAlive) {
+            Write-Log "OK" "外网恢复连通 (等待了${waited}秒)"
             return $true
         }
         Start-Sleep -Seconds $interval
         $waited += $interval
     }
-    Write-Log "WARN" "等待网络恢复超时, 下轮重试"
+    Write-Log "WARN" "等待外网恢复超时 (${MaxWait}秒)，下轮重试"
     return $false
 }
 
 # ---- 安装/卸载开机自启 ----
 function Install-AutoStart {
     $taskName = "WuxuanNetworkAuth"
-    $scriptPath = $MyInvocation.MyCommand.Path
+    $scriptPath = Join-Path $ScriptDir "auto_auth.ps1"
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
@@ -193,9 +205,27 @@ function Main {
 
         $retryCount = 0
         $lastHeartbeat = [datetime]::MinValue
-        $lastHttpCheck = [datetime]::MinValue
         $lastLoginTime = [datetime]::MinValue
         $isAuthenticated = $false
+
+        # 开机启动时等待外网就绪 (Task Scheduler 场景)
+        if (-not $Once) {
+            Write-Log "INFO" "等待外网就绪..."
+            $netReady = $false
+            for ($i = 1; $i -le 20; $i++) {
+                if (Test-InternetAlive) {
+                    $netReady = $true
+                    break
+                }
+                Start-Sleep -Seconds 3
+            }
+            if ($netReady) {
+                Write-Log "OK" "外网已就绪"
+            }
+            else {
+                Write-Log "WARN" "等待60秒外网仍未就绪，继续启动（后台持续重试）"
+            }
+        }
 
         # 单次模式
         if ($Once) {
@@ -213,76 +243,28 @@ function Main {
         while ($true) {
             try {
                 $now = Get-Date
+                $loginCooldown = ($now - $lastLoginTime).TotalSeconds
 
-                # ── 第1层: Ping 检测 (每5秒) ──
-                $pingOk = Test-PingAlive
-                if (-not $pingOk) {
-                    if ($isAuthenticated) {
-                        Write-Log "WARN" "检测到断网! (Ping 失败)"
-                        $isAuthenticated = $false
-                    }
-                    $backOk = Wait-NetworkBack
-                    if ($backOk) {
-                        Write-Log "INFO" "网络恢复，立即认证..."
-                        $success = Invoke-Login -Config $Config
-                        if ($success) {
-                            $isAuthenticated = $true
-                            $lastHeartbeat = Get-Date
-                            $lastHttpCheck = Get-Date
-                            $lastLoginTime = Get-Date
-                            $retryCount = 0
-                        }
-                    }
-                    Start-Sleep -Seconds 3
+                # 登录冷却期内跳过检测 (登录后等待生效)
+                if ($loginCooldown -lt 60 -and $isAuthenticated) {
+                    $remain = [int](60 - $loginCooldown)
+                    Write-Log "INFO" "登录冷却中 (${remain}秒)，跳过检测"
+                    Start-Sleep -Seconds 5
                     continue
                 }
 
-                # ── 第2层: HTTPS 认证检测 (每30秒) ──
-                $httpElapsed = ($now - $lastHttpCheck).TotalSeconds
-                $loginCooldown = ($now - $lastLoginTime).TotalSeconds
+                # -- 核心检测: HTTPS 外网是否连通 --
+                $inetOk = Test-InternetAlive
 
-                if ($httpElapsed -ge $Config.check_interval_sec) {
-                    $lastHttpCheck = Get-Date
-
-                    # 登录后60秒内跳过检测
-                    if ($loginCooldown -lt 60) {
-                        $remain = [int](60 - $loginCooldown)
-                        Write-Log "INFO" "登录冷却中, 跳过检测"
-                        $isAuthenticated = $true
+                if ($inetOk) {
+                    # 外网通 → 认证正常
+                    if (-not $isAuthenticated) {
+                        Write-Log "OK" "外网连通，认证正常"
                     }
-                    else {
-                        $inetOk = Test-InternetAlive
-                        if (-not $inetOk) {
-                            $isAuthenticated = $false
-                            $retryCount++
-                            Write-Log "WARN" "外网不通，尝试认证 (第${retryCount}次)"
+                    $isAuthenticated = $true
+                    $retryCount = 0
 
-                            if ($retryCount -gt 1) {
-                                $waitSec = [Math]::Min(60, [Math]::Pow(2, $retryCount - 1) * 5)
-                                Write-Log "INFO" "等待${waitSec}秒后重试..."
-                                Start-Sleep -Seconds $waitSec
-                            }
-
-                            $success = Invoke-Login -Config $Config
-                            if ($success) {
-                                $isAuthenticated = $true
-                                $lastHeartbeat = Get-Date
-                                $lastLoginTime = Get-Date
-                                $retryCount = 0
-                            }
-                        }
-                        else {
-                            if (-not $isAuthenticated) {
-                                Write-Log "OK" "网络已认证，外网连通"
-                            }
-                            $isAuthenticated = $true
-                            $retryCount = 0
-                        }
-                    }
-                }
-
-                # ── 第3层: 心跳保活 (每3分钟) ──
-                if ($isAuthenticated) {
+                    # 心跳保活
                     $hbElapsed = ($now - $lastHeartbeat).TotalSeconds
                     if ($hbElapsed -ge $Config.heartbeat_interval_sec) {
                         $hbOk = Send-Heartbeat -Config $Config
@@ -291,16 +273,43 @@ function Main {
                             $lastHeartbeat = Get-Date
                         }
                         else {
-                            Write-Log "WARN" "心跳失败，重新检测认证状态"
-                            $isAuthenticated = $false
-                            $inetOk = Test-InternetAlive
-                            if (-not $inetOk) {
-                                Invoke-Login -Config $Config | Out-Null
-                                $isAuthenticated = $true
-                                $lastHeartbeat = Get-Date
-                                $lastLoginTime = Get-Date
-                            }
+                            Write-Log "WARN" "心跳失败"
                         }
+                    }
+                }
+                else {
+                    # 外网不通 → 需要认证
+                    if ($isAuthenticated) {
+                        Write-Log "WARN" "检测到断网! (外网不通)"
+                        $isAuthenticated = $false
+                    }
+                    $retryCount++
+                    Write-Log "WARN" "外网不通，尝试认证 (第${retryCount}次)"
+
+                    # 退避等待
+                    if ($retryCount -gt 1) {
+                        $waitSec = [Math]::Min(60, [Math]::Pow(2, $retryCount - 1) * 5)
+                        Write-Log "INFO" "等待 ${waitSec} 秒后重试..."
+                        Start-Sleep -Seconds $waitSec
+                    }
+
+                    # 检查门户是否可达
+                    if (-not (Test-PortalReachable)) {
+                        Write-Log "WARN" "门户不可达，等待网络恢复..."
+                        $backOk = Wait-NetworkBack -MaxWait 60
+                        if (-not $backOk) {
+                            Start-Sleep -Seconds 5
+                            continue
+                        }
+                    }
+
+                    # 门户可达，尝试登录
+                    $success = Invoke-Login -Config $Config
+                    if ($success) {
+                        $isAuthenticated = $true
+                        $lastHeartbeat = Get-Date
+                        $lastLoginTime = Get-Date
+                        $retryCount = 0
                     }
                 }
             }
